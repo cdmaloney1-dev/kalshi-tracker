@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Kalshi Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0b; overflow-x: hidden; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #131316; }
+    ::-webkit-scrollbar-thumb { background: #2a2a32; border-radius: 3px; }
+    input[type="range"] { accent-color: #3b82f6; }
+    select option { background: #131316; color: #e4e4e7; }
+    @media (max-width: 768px) {
+      .stat-row { flex-direction: column !important; }
+      .bet-grid { grid-template-columns: 1fr !important; }
+      .bet-header { display: none !important; }
+      .modal-inner { width: 95vw !important; padding: 16px !important; }
+      .kelly-grid { grid-template-columns: 1fr !important; }
+      .filter-row { flex-direction: column !important; }
+      .filter-row > * { width: 100% !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useMemo, useCallback, useEffect, useRef } = React;
+    const firebaseConfig = {
+      apiKey: "AIzaSyB8XFE8tY0bFIzIk9JrMDgbfz4o8udARAY",
+      authDomain: "kalshi-tracker-32799.firebaseapp.com",
+      databaseURL: "https://kalshi-tracker-32799-default-rtdb.firebaseio.com",
+      projectId: "kalshi-tracker-32799",
+      storageBucket: "kalshi-tracker-32799.firebasestorage.app",
+      messagingSenderId: "853322743421",
+      appId: "1:853322743421:web:97ce3337424e14374bfb14"
+    };
+    const app = firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+    const googleProvider = new firebase.auth.GoogleAuthProvider();
+    const formatMoney = (n) => {
+      if (n === undefined || n === null || isNaN(n)) return "$0.00";
+      return `$${Number(n).toFixed(2)}`;
+    };
+    const formatPct = (n) => `${Number(n).toFixed(1)}%`;
+    const calcKelly = (prob, odds) => {
+      if (!prob || !odds || odds <= 0) return 0;
+      const p = prob / 100;
+      const q = 1 - p;
+      const b = odds;
+      return Math.max(0, (b * p - q) / b);
+    };
+    const STATUS_COLORS = { won: "#22c55e", lost: "#ef4444", pending: "#f59e0b", void: "#6b7280" };
+    const CATEGORIES = ["Sports", "Politics", "Economics", "Crypto", "Weather", "Entertainment", "Other"];
+    const SEVERITY_COLORS = { critical: "#ef4444", high: "#f97316", medium: "#f59e0b", info: "#3b82f6" };
+    const T = {
+      bg: "#0a0a0b", surface: "#131316", surfaceHover: "#1a1a1f",
+      border: "#1f1f25", borderActive: "#2a2a32",
+      text: "#e4e4e7", textMuted: "#71717a", textDim: "#52525b",
+      accent: "#3b82f6", accentDim: "#1d4ed8",
+      green: "#22c55e", greenDim: "#15803d",
+      red: "#ef4444", redDim: "#991b1b",
+      yellow: "#f59e0b",
+      mono: "'JetBrains Mono','SF Mono','Fira Code',monospace",
+      sans: "'DM Sans','Helvetica Neue',system-ui,sans-serif",
+    };
+    const inputStyle = {
+      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6,
+      color: T.text, padding: "8px 12px", fontSize: 13, fontFamily: T.mono,
+      outline: "none", width: "100%", boxSizing: "border-box",
+    };
+    const Pill = ({ children, color = T.textMuted, bg }) => (
+      <span style={{
+        display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 11,
+        fontFamily: T.mono, fontWeight: 600, letterSpacing: "0.04em",
+        textTransform: "uppercase", color, background: bg || `${color}18`,
+      }}>{children}</span>
+    );
+    const StatBlock = ({ label, value, sub, color, mono = true }) => (
+      <div style={{ padding: "14px 16px", background: T.surface, borderRadius: 8, border: `1px solid ${T.border}`, flex: 1, minWidth: 130 }}>
+        <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: T.sans, marginBottom: 6, fontWeight: 500 }}>{label}</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: color || T.text, fontFamily: mono ? T.mono : T.sans, lineHeight: 1.1 }}>{value}</div>
+        {sub && <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.mono, marginTop: 4 }}>{sub}</div>}
+      </div>
+    );
+    const TabBtn = ({ active, children, onClick }) => (
+      <button onClick={onClick} style={{
+        padding: "8px 14px", fontSize: 13, fontFamily: T.sans,
+        fontWeight: active ? 600 : 400, color: active ? T.text : T.textMuted,
+        background: active ? T.surfaceHover : "transparent",
+        border: `1px solid ${active ? T.borderActive : "transparent"}`,
+        borderRadius: 6, cursor: "pointer",
+      }}>{children}</button>
+    );
+    const Btn = ({ children, onClick, variant = "default", style: s = {}, disabled = false }) => {
+      const v = {
+        default: { background: T.surface, color: T.text, border: `1px solid ${T.border}` },
+        primary: { background: T.accent, color: "#fff", border: `1px solid ${T.accentDim}` },
+        danger: { background: T.redDim, color: "#fff", border: `1px solid ${T.red}33` },
+        success: { background: T.greenDim, color: "#fff", border: `1px solid ${T.green}33` },
+      };
+      return (
+        <button disabled={disabled} onClick={onClick} style={{
+          padding: "8px 16px", fontSize: 13, fontFamily: T.sans, fontWeight: 500,
+          borderRadius: 6, cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.5 : 1, ...v[variant], ...s,
+        }}>{children}</button>
+      );
+    };
+    const Field = ({ label, children }) => (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <label style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: T.sans, fontWeight: 500 }}>{label}</label>
+        {children}
+      </div>
+    );
+    const getSignals = (bankroll, bets) => {
+      const signals = [];
+      const { initial, current, profitTarget, stopLoss, unitPercent } = bankroll;
+      const pnlPct = initial > 0 ? ((current - initial) / initial) * 100 : 0;
+      const completed = bets.filter(b => b.status === "won" || b.status === "lost");
+      const wins = completed.filter(b => b.status === "won").length;
+      const winRate = completed.length > 0 ? (wins / completed.length) * 100 : 0;
+      const unitSize = (current * unitPercent) / 100;
+      if (pnlPct >= profitTarget) {
+        signals.push({ severity: "high", title: "Profit Target Hit", message: `Up ${formatPct(pnlPct)}. Consider withdrawing ${formatMoney((current - initial) * 0.5)} (50% of profits) and resetting baseline.`, action: "Take profits" });
+      } else if (pnlPct >= profitTarget * 0.75) {
+        signals.push({ severity: "medium", title: "Approaching Profit Target", message: `At ${formatPct(pnlPct)} — ${formatPct(profitTarget - pnlPct)} from your ${formatPct(profitTarget)} target.`, action: "Monitor" });
+      }
+      if (pnlPct <= -stopLoss) {
+        signals.push({ severity: "critical", title: "Stop Loss Breached", message: `Down ${formatPct(Math.abs(pnlPct))} — past your ${formatPct(stopLoss)} stop. Pause betting. Re-evaluate before risking more.`, action: "Stop betting" });
+      } else if (pnlPct <= -stopLoss * 0.7) {
+        signals.push({ severity: "high", title: "Approaching Stop Loss", message: `Down ${formatPct(Math.abs(pnlPct))}. Reduce unit size to ${formatPct(unitPercent * 0.5)} (${formatMoney(unitSize * 0.5)}/bet) until recovery.`, action: "Reduce exposure" });
+      }
+      if (completed.length >= 10) {
+        if (winRate < 40) signals.push({ severity: "high", title: "Low Win Rate", message: `${formatPct(winRate)} over ${completed.length} bets. Review Gemini accuracy. Consider pausing.`, action: "Review strategy" });
+        else if (winRate > 65) signals.push({ severity: "info", title: "Strong Win Rate", message: `${formatPct(winRate)} over ${completed.length} bets. Consider scaling unit size to ${formatPct(Math.min(unitPercent * 1.5, 5))}.`, action: "Consider scaling" });
+      }
+      const last10 = completed.slice(-10);
+      if (last10.length >= 5) {
+        const rwr = last10.filter(b => b.status === "won").length / last10.length;
+        if (rwr < 0.3) signals.push({ severity: "medium", title: "Recent Cold Streak", message: `${(rwr * 100).toFixed(0)}% win rate last ${last10.length} bets. Drop to ${formatPct(unitPercent * 0.5)} units (${formatMoney(unitSize * 0.5)}/bet).`, action: "Halve unit size" });
+      }
+      if (completed.length >= 3) {
+        let streak = 1;
+        const ls = completed[completed.length - 1]?.status;
+        for (let i = completed.length - 2; i >= 0; i--) { if (completed[i].status === ls) streak++; else break; }
+        if (streak >= 4 && ls === "won") signals.push({ severity: "medium", title: `${streak}-Bet Win Streak`, message: `Hot streak. Stay disciplined — stick to unit size (${formatMoney(unitSize)}).`, action: "Stay disciplined" });
+        if (streak >= 3 && ls === "lost") signals.push({ severity: "high", title: `${streak}-Bet Losing Streak`, message: `${streak} consecutive losses. Step back. Consider half units.`, action: "Pause & reassess" });
+      }
+      const pending = bets.filter(b => b.status === "pending");
+      const pendingRisk = pending.reduce((s, b) => s + (b.stake || 0), 0);
+      const exposure = current > 0 ? (pendingRisk / current) * 100 : 0;
+      if (exposure > 20) signals.push({ severity: "high", title: "High Open Exposure", message: `${formatPct(exposure)} of bankroll at risk across ${pending.length} pending bets (${formatMoney(pendingRisk)}). Cap at 15-20%.`, action: "Reduce positions" });
+      if (signals.length === 0) signals.push({ severity: "info", title: "No Active Signals", message: "All metrics within normal range. Continue current strategy.", action: null });
+      return signals;
+    };
+    const LoginScreen = ({ onSignIn, loading }) => (
+      <div style={{ fontFamily: T.sans, background: T.bg, color: T.text, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", padding: 40 }}>
+          <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 8, letterSpacing: "-0.02em" }}>Kalshi Tracker</div>
+          <div style={{ fontSize: 13, color: T.textDim, fontFamily: T.mono, marginBottom: 32 }}>bankroll management · bet log · signals</div>
+          {loading ? (
+            <div style={{ color: T.textMuted, fontSize: 14 }}>Loading...</div>
+          ) : (
+            <button onClick={onSignIn} style={{
+              padding: "12px 28px", fontSize: 15, fontFamily: T.sans, fontWeight: 600,
+              background: "#fff", color: "#000", border: "none", borderRadius: 8,
+              cursor: "pointer", display: "flex", alignItems: "center", gap: 10, margin: "0 auto",
+            }}>
+              <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z"/><path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17z"/><path fill="#FBBC05" d="M4.5 10.52a4.8 4.8 0 0 1 0-3.04V5.41H1.83a8 8 0 0 0 0 7.18l2.67-2.07z"/><path fill="#EA4335" d="M8.98 3.58c1.16 0 2.2.4 3.02 1.18l2.27-2.26A8 8 0 0 0 1.83 5.4L4.5 7.49a4.77 4.77 0 0 1 4.48-3.9z"/></svg>
+              Sign in with Google
+            </button>
+          )}
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 20 }}>Your data syncs across all your devices.</div>
+        </div>
+      </div>
+    );
+    const DEFAULT_BANKROLL = { initial: 1000, current: 1000, unitPercent: 2, profitTarget: 20, stopLoss: 30 };
+    function Dashboard({ user }) {
+      const [tab, setTab] = useState("dashboard");
+      const [bankroll, setBankroll] = useState(DEFAULT_BANKROLL);
+      const [bets, setBets] = useState([]);
+      const [loaded, setLoaded] = useState(false);
+      const [showAddBet, setShowAddBet] = useState(false);
+      const [editingBet, setEditingBet] = useState(null);
+      const [filterStatus, setFilterStatus] = useState("all");
+      const [filterCategory, setFilterCategory] = useState("all");
+      const [sortBy, setSortBy] = useState("date");
+      const [sortDir, setSortDir] = useState("desc");
+      const [expandedBet, setExpandedBet] = useState(null);
+      const defaultBet = { market: "", category: "Sports", position: "Yes", stake: "", odds: "", impliedProb: "", payout: "", status: "pending", date: new Date().toISOString().split("T")[0], notes: "" };
+      const [betForm, setBetForm] = useState(defaultBet);
+      const userRef = useRef(null);
+      useEffect(() => {
+        if (!user) return;
+        const ref = db.ref(`users/${user.uid}`);
+        userRef.current = ref;
+        const bankrollRef = ref.child("bankroll");
+        bankrollRef.on("value", (snap) => {
+          const val = snap.val();
+          if (val) setBankroll(val);
+          setLoaded(true);
+        });
+        const betsRef = ref.child("bets");
+        betsRef.on("value", (snap) => {
+          const val = snap.val();
+          if (val) {
+            const arr = Object.entries(val).map(([id, data]) => ({ ...data, id }));
+            setBets(arr);
+          } else { setBets([]); }
+        });
+        return () => { bankrollRef.off(); betsRef.off(); };
+      }, [user]);
+      const saveBankroll = useCallback((updates) => {
+        setBankroll(prev => {
+          const next = { ...prev, ...updates };
+          if (userRef.current) userRef.current.child("bankroll").set(next);
+          return next;
+        });
+      }, []);
+      const saveBetToDB = useCallback((bet) => {
+        if (userRef.current) userRef.current.child(`bets/${bet.id}`).set(bet);
+      }, []);
+      const deleteBetFromDB = useCallback((id) => {
+        if (userRef.current) userRef.current.child(`bets/${id}`).remove();
+      }, []);
+      const stats = useMemo(() => {
+        const completed = bets.filter(b => b.status === "won" || b.status === "lost");
+        const wins = completed.filter(b => b.status === "won");
+        const losses = completed.filter(b => b.status === "lost");
+        const pending = bets.filter(b => b.status === "pending");
+        const totalWon = wins.reduce((s, b) => s + (b.payout || 0) - (b.stake || 0), 0);
+        const totalLost = losses.reduce((s, b) => s + (b.stake || 0), 0);
+        const netPnL = totalWon - totalLost;
+        const totalStaked = completed.reduce((s, b) => s + (b.stake || 0), 0);
+        const roi = totalStaked > 0 ? (netPnL / totalStaked) * 100 : 0;
+        const winRate = completed.length > 0 ? (wins.length / completed.length) * 100 : 0;
+        const avgWin = wins.length > 0 ? totalWon / wins.length : 0;
+        const avgLoss = losses.length > 0 ? totalLost / losses.length : 0;
+        const pendingRisk = pending.reduce((s, b) => s + (b.stake || 0), 0);
+        const unitSize = (bankroll.current * bankroll.unitPercent) / 100;
+        const byCategory = {};
+        completed.forEach(b => {
+          const cat = b.category || "Other";
+          if (!byCategory[cat]) byCategory[cat] = { wins: 0, losses: 0, pnl: 0, count: 0 };
+          byCategory[cat].count++;
+          if (b.status === "won") { byCategory[cat].wins++; byCategory[cat].pnl += (b.payout || 0) - (b.stake || 0); }
+          else { byCategory[cat].losses++; byCategory[cat].pnl -= b.stake || 0; }
+        });
+        const pnlHistory = [];
+        let running = 0;
+        [...completed].sort((a, b) => new Date(a.date) - new Date(b.date)).forEach(b => {
+          if (b.status === "won") running += (b.payout || 0) - (b.stake || 0);
+          else running -= b.stake || 0;
+          pnlHistory.push({ date: b.date, pnl: running });
+        });
+        return { completed, wins, losses, pending, totalWon, totalLost, netPnL, roi, winRate, avgWin, avgLoss, pendingRisk, unitSize, byCategory, pnlHistory };
+      }, [bets, bankroll]);
+      const signals = useMemo(() => getSignals(bankroll, bets), [bankroll, bets]);
+      const filteredBets = useMemo(() => {
+        let f = [...bets];
+        if (filterStatus !== "all") f = f.filter(b => b.status === filterStatus);
+        if (filterCategory !== "all") f = f.filter(b => b.category === filterCategory);
+        f.sort((a, b) => {
+          let cmp = 0;
+          if (sortBy === "date") cmp = new Date(a.date) - new Date(b.date);
+          else if (sortBy === "stake") cmp = (a.stake || 0) - (b.stake || 0);
+          else if (sortBy === "market") cmp = (a.market || "").localeCompare(b.market || "");
+          return sortDir === "desc" ? -cmp : cmp;
+        });
+        return f;
+      }, [bets, filterStatus, filterCategory, sortBy, sortDir]);
+      const openAddBet = () => { setBetForm({ ...defaultBet, date: new Date().toISOString().split("T")[0] }); setEditingBet(null); setShowAddBet(true); };
+      const openEditBet = (bet) => { setBetForm({ ...bet }); setEditingBet(bet.id); setShowAddBet(true); };
+      const saveBet = () => {
+        if (!betForm.market || !betForm.stake) return;
+        const bet = { ...betForm, stake: parseFloat(betForm.stake) || 0, odds: parseFloat(betForm.odds) || 0, impliedProb: parseFloat(betForm.impliedProb) || 0, payout: parseFloat(betForm.payout) || 0, id: editingBet || `bet_${Date.now()}` };
+        if (editingBet) {
+          const oldBet = bets.find(b => b.id === editingBet);
+          if (oldBet && oldBet.status !== bet.status) {
+            let adj = 0;
+            if (oldBet.status === "won") adj -= (oldBet.payout || 0) - (oldBet.stake || 0);
+            if (oldBet.status === "lost") adj += oldBet.stake || 0;
+            if (bet.status === "won") adj += (bet.payout || 0) - (bet.stake || 0);
+            if (bet.status === "lost") adj -= bet.stake || 0;
+            saveBankroll({ current: bankroll.current + adj });
+          }
+        }
+        saveBetToDB(bet);
+        setShowAddBet(false);
+      };
+      const deleteBet = (id) => {
+        const bet = bets.find(b => b.id === id);
+        if (bet) {
+          let adj = 0;
+          if (bet.status === "won") adj = -((bet.payout || 0) - (bet.stake || 0));
+          if (bet.status === "lost") adj = bet.stake || 0;
+          saveBankroll({ current: bankroll.current + adj });
+        }
+        deleteBetFromDB(id);
+      };
+      const resolveBet = (id, status) => {
+        const bet = bets.find(b => b.id === id);
+        if (!bet) return;
+        let adj = 0;
+        if (status === "won") adj = (bet.payout || 0) - (bet.stake || 0);
+        if (status === "lost") adj = -(bet.stake || 0);
+        saveBankroll({ current: bankroll.current + adj });
+        saveBetToDB({ ...bet, status });
+      };
+      const kellyFraction = betForm.impliedProb && betForm.odds ? calcKelly(parseFloat(betForm.impliedProb), parseFloat(betForm.odds)) : 0;
+      const kellyStake = kellyFraction * bankroll.current;
+      if (!loaded) return (<div style={{ fontFamily: T.sans, background: T.bg, color: T.textMuted, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>Loading your data...</div>);
+      return (
+        <div style={{ fontFamily: T.sans, background: T.bg, color: T.text, minHeight: "100vh", padding: "16px 20px", maxWidth: 1200, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, borderBottom: `1px solid ${T.border}`, paddingBottom: 12, flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.02em" }}>Kalshi Tracker</div>
+              <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.mono, marginTop: 2 }}>
+                {user.displayName || user.email} · <span style={{ cursor: "pointer", color: T.accent }} onClick={() => auth.signOut()}>sign out</span>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <TabBtn active={tab === "dashboard"} onClick={() => setTab("dashboard")}>Dashboard</TabBtn>
+              <TabBtn active={tab === "bets"} onClick={() => setTab("bets")}>Bets</TabBtn>
+              <TabBtn active={tab === "signals"} onClick={() => setTab("signals")}>Signals</TabBtn>
+              <TabBtn active={tab === "settings"} onClick={() => setTab("settings")}>Settings</TabBtn>
+            </div>
+          </div>
+          {tab === "dashboard" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div className="stat-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <StatBlock label="Bankroll" value={formatMoney(bankroll.current)} sub={`Initial: ${formatMoney(bankroll.initial)}`} />
+                <StatBlock label="Net P&L" value={formatMoney(stats.netPnL)} color={stats.netPnL >= 0 ? T.green : T.red} sub={`ROI: ${formatPct(stats.roi)}`} />
+                <StatBlock label="Unit Size" value={formatMoney(stats.unitSize)} sub={`${bankroll.unitPercent}% of bankroll`} />
+                <StatBlock label="Win Rate" value={stats.completed.length > 0 ? formatPct(stats.winRate) : "—"} sub={`${stats.wins.length}W / ${stats.losses.length}L`} color={stats.winRate >= 50 ? T.green : stats.winRate > 0 ? T.red : T.textMuted} />
+                <StatBlock label="Pending" value={stats.pending.length} sub={`${formatMoney(stats.pendingRisk)} at risk`} color={T.yellow} mono={false} />
+              </div>
+              <div className="stat-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <StatBlock label="Avg Win" value={formatMoney(stats.avgWin)} color={T.green} />
+                <StatBlock label="Avg Loss" value={formatMoney(stats.avgLoss)} color={T.red} />
+                <StatBlock label="Total Bets" value={bets.length} mono={false} sub={`${stats.completed.length} resolved`} />
+                <StatBlock label="Edge" value={stats.avgLoss > 0 ? (stats.avgWin / stats.avgLoss).toFixed(2) + "x" : "—"} sub="avg win / avg loss" />
+              </div>
+              {signals.filter(s => s.severity !== "info").length > 0 && (
+                <div style={{ background: T.surface, borderRadius: 8, border: `1px solid ${T.border}`, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10, fontWeight: 500 }}>Active Signals</div>
+                  {signals.filter(s => s.severity !== "info").slice(0, 3).map((sig, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: `${SEVERITY_COLORS[sig.severity]}08`, borderRadius: 6, borderLeft: `3px solid ${SEVERITY_COLORS[sig.severity]}`, marginBottom: 6, flexWrap: "wrap" }}>
+                      <Pill color={SEVERITY_COLORS[sig.severity]}>{sig.severity}</Pill>
+                      <span style={{ fontSize: 13, fontWeight: 500 }}>{sig.title}</span>
+                      <span style={{ fontSize: 12, color: T.textMuted, flex: 1, minWidth: 100 }}>{sig.message.length > 80 ? sig.message.substring(0, 80) + "…" : sig.message}</span>
+                      <span style={{ cursor: "pointer", fontSize: 12, color: T.accent }} onClick={() => setTab("signals")}>View →</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {Object.keys(stats.byCategory).length > 0 && (
+                <div style={{ background: T.surface, borderRadius: 8, border: `1px solid ${T.border}`, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10, fontWeight: 500 }}>Category Performance</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+                    {Object.entries(stats.byCategory).map(([cat, data]) => (
+                      <div key={cat} style={{ padding: 10, background: T.bg, borderRadius: 6, border: `1px solid ${T.border}` }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{cat}</div>
+                        <div style={{ display: "flex", gap: 10, fontSize: 12, fontFamily: T.mono }}>
+                          <span style={{ color: T.textMuted }}>{data.count}</span>
+                          <span style={{ color: data.pnl >= 0 ? T.green : T.red }}>{formatMoney(data.pnl)}</span>
+                          <span style={{ color: T.textMuted }}>{formatPct((data.wins / data.count) * 100)} W</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {stats.pnlHistory.length > 0 && (
+                <div style={{ background: T.surface, borderRadius: 8, border: `1px solid ${T.border}`, padding: 14 }}>
+                  <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10, fontWeight: 500 }}>P&L Curve</div>
+                  <div style={{ height: 100, display: "flex", alignItems: "flex-end", gap: 2, padding: "0 4px" }}>
+                    {(() => {
+                      const vals = stats.pnlHistory.map(p => p.pnl);
+                      const max = Math.max(...vals.map(Math.abs), 1);
+                      const mid = 50;
+                      return stats.pnlHistory.map((p, i) => {
+                        const h = Math.abs(p.pnl / max) * mid;
+                        const isPos = p.pnl >= 0;
+                        return (<div key={i} style={{ flex: 1, height: 100, position: "relative" }}><div style={{ position: "absolute", bottom: isPos ? mid : mid - h, height: h || 1, width: "100%", background: isPos ? T.green : T.red, borderRadius: 1, opacity: 0.7, minHeight: 1 }} /></div>);
+                      });
+                    })()}
+                  </div>
+                  <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6, display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: T.mono, color: T.textDim }}>
+                    <span>{stats.pnlHistory[0]?.date}</span><span>0</span><span>{stats.pnlHistory[stats.pnlHistory.length - 1]?.date}</span>
+                  </div>
+                </div>
+              )}
+              <Btn variant="primary" onClick={openAddBet} style={{ alignSelf: "flex-start" }}>+ Add Bet</Btn>
+            </div>
+          )}
+          {tab === "bets" && (
+            <div>
+              <div className="filter-row" style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+                <Btn variant="primary" onClick={openAddBet}>+ Add Bet</Btn>
+                <div style={{ flex: 1 }} />
+                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ ...inputStyle, width: 120 }}>
+                  <option value="all">All Status</option><option value="pending">Pending</option><option value="won">Won</option><option value="lost">Lost</option><option value="void">Void</option>
+                </select>
+                <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} style={{ ...inputStyle, width: 130 }}>
+                  <option value="all">All Categories</option>
+                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={`${sortBy}_${sortDir}`} onChange={e => { const [by, dir] = e.target.value.split("_"); setSortBy(by); setSortDir(dir); }} style={{ ...inputStyle, width: 140 }}>
+                  <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="stake_desc">Highest Stake</option><option value="stake_asc">Lowest Stake</option><option value="market_asc">Market A-Z</option>
+                </select>
+              </div>
+              {filteredBets.length === 0 ? (
+                <div style={{ textAlign: "center", color: T.textMuted, padding: 50, fontSize: 14 }}>{bets.length === 0 ? "No bets yet. Add your first one." : "No bets match filters."}</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div className="bet-header" style={{ display: "grid", gridTemplateColumns: "90px 1fr 80px 60px 70px 70px 80px 40px", gap: 6, padding: "8px 10px", fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", fontFamily: T.sans, fontWeight: 500, borderBottom: `1px solid ${T.border}` }}>
+                    <span>Date</span><span>Market</span><span>Category</span><span>Pos</span><span>Stake</span><span>Payout</span><span>Status</span><span></span>
+                  </div>
+                  {filteredBets.map(bet => (
+                    <div key={bet.id}>
+                      <div className="bet-grid" onClick={() => setExpandedBet(expandedBet === bet.id ? null : bet.id)} style={{ display: "grid", gridTemplateColumns: "90px 1fr 80px 60px 70px 70px 80px 40px", gap: 6, padding: "10px 10px", fontSize: 13, fontFamily: T.mono, background: expandedBet === bet.id ? T.surfaceHover : T.surface, borderRadius: 4, cursor: "pointer", alignItems: "center", borderBottom: `1px solid ${T.border}` }}>
+                        <span style={{ color: T.textMuted, fontSize: 12 }}>{bet.date}</span>
+                        <span style={{ fontFamily: T.sans, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bet.market}</span>
+                        <Pill>{bet.category}</Pill>
+                        <span style={{ color: bet.position === "Yes" ? T.green : T.red }}>{bet.position}</span>
+                        <span>{formatMoney(bet.stake)}</span>
+                        <span style={{ color: bet.status === "won" ? T.green : T.textMuted }}>{bet.payout ? formatMoney(bet.payout) : "—"}</span>
+                        <Pill color={STATUS_COLORS[bet.status]}>{bet.status}</Pill>
+                        <span style={{ fontSize: 12, color: T.textDim }}>▾</span>
+                      </div>
+                      {expandedBet === bet.id && (
+                        <div style={{ padding: "12px 14px", background: T.bg, borderRadius: "0 0 6px 6px", borderLeft: `2px solid ${STATUS_COLORS[bet.status]}`, marginBottom: 4 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, fontSize: 12, marginBottom: 10 }}>
+                            <div><span style={{ color: T.textDim }}>Odds: </span><span style={{ fontFamily: T.mono }}>{bet.odds || "—"}</span></div>
+                            <div><span style={{ color: T.textDim }}>Implied: </span><span style={{ fontFamily: T.mono }}>{bet.impliedProb ? formatPct(bet.impliedProb) : "—"}</span></div>
+                            <div><span style={{ color: T.textDim }}>P&L: </span><span style={{ fontFamily: T.mono, color: bet.status === "won" ? T.green : bet.status === "lost" ? T.red : T.textMuted }}>{bet.status === "won" ? `+${formatMoney((bet.payout || 0) - (bet.stake || 0))}` : bet.status === "lost" ? `-${formatMoney(bet.stake)}` : "—"}</span></div>
+                            <div><span style={{ color: T.textDim }}>Units: </span><span style={{ fontFamily: T.mono }}>{stats.unitSize > 0 ? ((bet.stake || 0) / stats.unitSize).toFixed(1) : "—"}</span></div>
+                          </div>
+                          {bet.notes && <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 10, padding: "6px 10px", background: T.surface, borderRadius: 4, fontStyle: "italic" }}>{bet.notes}</div>}
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {bet.status === "pending" && (<><Btn variant="success" onClick={() => resolveBet(bet.id, "won")} style={{ fontSize: 12, padding: "4px 10px" }}>Won</Btn><Btn variant="danger" onClick={() => resolveBet(bet.id, "lost")} style={{ fontSize: 12, padding: "4px 10px" }}>Lost</Btn><Btn onClick={() => resolveBet(bet.id, "void")} style={{ fontSize: 12, padding: "4px 10px" }}>Void</Btn></>)}
+                            <Btn onClick={() => openEditBet(bet)} style={{ fontSize: 12, padding: "4px 10px" }}>Edit</Btn>
+                            <Btn variant="danger" onClick={() => { if (confirm("Delete this bet?")) deleteBet(bet.id); }} style={{ fontSize: 12, padding: "4px 10px" }}>Delete</Btn>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {tab === "signals" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, marginBottom: 4 }}>Bankroll Signals & Recommendations</div>
+              {signals.map((sig, i) => (
+                <div key={i} style={{ padding: 14, background: T.surface, borderRadius: 8, border: `1px solid ${T.border}`, borderLeft: `4px solid ${SEVERITY_COLORS[sig.severity]}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                    <Pill color={SEVERITY_COLORS[sig.severity]}>{sig.severity}</Pill>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>{sig.title}</span>
+                    {sig.action && <Pill color={T.accent}>{sig.action}</Pill>}
+                  </div>
+                  <div style={{ fontSize: 13, color: T.textMuted, lineHeight: 1.6 }}>{sig.message}</div>
+                </div>
+              ))}
+              <div style={{ marginTop: 16, padding: 14, background: T.surface, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, marginBottom: 10 }}>Kelly Criterion Calculator</div>
+                <div style={{ fontSize: 12, color: T.textDim, marginBottom: 10 }}>Enter your edge estimate and contract odds for optimal sizing.</div>
+                <div className="kelly-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                  <Field label="Your True Prob (%)"><input type="number" value={betForm.impliedProb} onChange={e => setBetForm(f => ({ ...f, impliedProb: e.target.value }))} style={inputStyle} placeholder="65" /></Field>
+                  <Field label="Decimal Odds"><input type="number" value={betForm.odds} onChange={e => setBetForm(f => ({ ...f, odds: e.target.value }))} style={inputStyle} placeholder="1.8" /></Field>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <label style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500 }}>Optimal Stake</label>
+                    <div style={{ fontSize: 18, fontFamily: T.mono, fontWeight: 700, color: kellyFraction > 0 ? T.green : T.textMuted, paddingTop: 4 }}>
+                      {kellyFraction > 0 ? (<>{formatMoney(kellyStake)} <span style={{ fontSize: 11, fontWeight: 400, color: T.textDim }}>full</span><div style={{ fontSize: 12, color: T.textMuted, fontWeight: 400, marginTop: 2 }}>½K: {formatMoney(kellyStake * 0.5)} · ¼K: {formatMoney(kellyStake * 0.25)}</div></>) : "—"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {tab === "settings" && (
+            <div style={{ maxWidth: 500 }}>
+              <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, marginBottom: 14 }}>Bankroll Configuration</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14, background: T.surface, padding: 18, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                <Field label="Initial Bankroll ($)"><input type="number" value={bankroll.initial} onChange={e => saveBankroll({ initial: parseFloat(e.target.value) || 0 })} style={inputStyle} /></Field>
+                <Field label="Current Bankroll ($)"><input type="number" value={bankroll.current} onChange={e => saveBankroll({ current: parseFloat(e.target.value) || 0 })} style={inputStyle} /></Field>
+                <Field label={`Unit Size (%) — ${formatMoney((bankroll.current * bankroll.unitPercent) / 100)}/bet`}>
+                  <input type="range" min="0.5" max="10" step="0.5" value={bankroll.unitPercent} onChange={e => saveBankroll({ unitPercent: parseFloat(e.target.value) })} style={{ width: "100%" }} />
+                  <div style={{ fontSize: 13, fontFamily: T.mono, color: T.text }}>{bankroll.unitPercent}%</div>
+                </Field>
+                <Field label="Profit Target (%)"><input type="number" value={bankroll.profitTarget} onChange={e => saveBankroll({ profitTarget: parseFloat(e.target.value) || 0 })} style={inputStyle} /></Field>
+                <Field label="Stop Loss (%)"><input type="number" value={bankroll.stopLoss} onChange={e => saveBankroll({ stopLoss: parseFloat(e.target.value) || 0 })} style={inputStyle} /></Field>
+              </div>
+              <div style={{ marginTop: 20, fontSize: 11, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 500, marginBottom: 10 }}>Data</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Btn onClick={() => { const data = JSON.stringify({ bankroll, bets }, null, 2); const blob = new Blob([data], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `kalshi_backup_${new Date().toISOString().split("T")[0]}.json`; a.click(); }}>Export JSON</Btn>
+                <Btn onClick={() => { const input = document.createElement("input"); input.type = "file"; input.accept = ".json"; input.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { const data = JSON.parse(ev.target.result); if (data.bankroll) saveBankroll(data.bankroll); if (data.bets && Array.isArray(data.bets)) { data.bets.forEach(b => { if (b.id) saveBetToDB(b); }); } } catch { alert("Invalid file"); } }; reader.readAsText(file); }; input.click(); }}>Import JSON</Btn>
+                <Btn variant="danger" onClick={() => { if (confirm("Clear ALL data? Cannot undo.")) { saveBankroll({ ...DEFAULT_BANKROLL }); if (userRef.current) userRef.current.child("bets").remove(); } }}>Reset All</Btn>
+              </div>
+              <div style={{ marginTop: 20, padding: 12, background: T.surface, borderRadius: 8, border: `1px solid ${T.border}`, fontSize: 12, color: T.textDim, lineHeight: 1.6 }}>
+                Signed in as <strong style={{ color: T.text }}>{user.email}</strong>. Data syncs in real-time across all devices signed into this Google account.
+              </div>
+            </div>
+          )}
+          {showAddBet && (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowAddBet(false)}>
+              <div className="modal-inner" onClick={e => e.stopPropagation()} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: 22, width: 520, maxHeight: "85vh", overflow: "auto" }}>
+                <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>{editingBet ? "Edit Bet" : "Add Bet"}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <Field label="Market / Event"><input value={betForm.market} onChange={e => setBetForm(f => ({ ...f, market: e.target.value }))} style={inputStyle} placeholder="Will BTC hit $100k by March?" /></Field>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Category"><select value={betForm.category} onChange={e => setBetForm(f => ({ ...f, category: e.target.value }))} style={inputStyle}>{CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></Field>
+                    <Field label="Position"><select value={betForm.position} onChange={e => setBetForm(f => ({ ...f, position: e.target.value }))} style={inputStyle}><option value="Yes">Yes</option><option value="No">No</option></select></Field>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                    <Field label="Stake ($)"><input type="number" value={betForm.stake} onChange={e => setBetForm(f => ({ ...f, stake: e.target.value }))} style={inputStyle} placeholder="20" /></Field>
+                    <Field label="Odds (decimal)"><input type="number" value={betForm.odds} onChange={e => setBetForm(f => ({ ...f, odds: e.target.value }))} style={inputStyle} placeholder="1.80" /></Field>
+                    <Field label="Payout ($)"><input type="number" value={betForm.payout} onChange={e => setBetForm(f => ({ ...f, payout: e.target.value }))} style={inputStyle} placeholder="36" /></Field>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Implied Prob (%)"><input type="number" value={betForm.impliedProb} onChange={e => setBetForm(f => ({ ...f, impliedProb: e.target.value }))} style={inputStyle} placeholder="55" /></Field>
+                    <Field label="Date"><input type="date" value={betForm.date} onChange={e => setBetForm(f => ({ ...f, date: e.target.value }))} style={inputStyle} /></Field>
+                  </div>
+                  {editingBet && (<Field label="Status"><select value={betForm.status} onChange={e => setBetForm(f => ({ ...f, status: e.target.value }))} style={inputStyle}><option value="pending">Pending</option><option value="won">Won</option><option value="lost">Lost</option><option value="void">Void</option></select></Field>)}
+                  <Field label="Notes"><textarea value={betForm.notes} onChange={e => setBetForm(f => ({ ...f, notes: e.target.value }))} style={{ ...inputStyle, minHeight: 50, resize: "vertical" }} placeholder="Source, reasoning, Gemini confidence..." /></Field>
+                  {betForm.impliedProb && betForm.odds && kellyFraction > 0 && (
+                    <div style={{ padding: 10, background: T.bg, borderRadius: 6, fontSize: 12, fontFamily: T.mono, color: T.textMuted, border: `1px solid ${T.border}` }}>
+                      Kelly: {formatMoney(kellyStake)} (full) · {formatMoney(kellyStake * 0.5)} (half) · {formatMoney(kellyStake * 0.25)} (quarter)
+                      {betForm.stake && parseFloat(betForm.stake) > kellyStake && (<div style={{ color: T.red, marginTop: 4 }}>⚠ Stake exceeds full Kelly</div>)}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+                  <Btn onClick={() => setShowAddBet(false)}>Cancel</Btn>
+                  <Btn variant="primary" onClick={saveBet} disabled={!betForm.market || !betForm.stake}>Save</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+    function App() {
+      const [user, setUser] = useState(null);
+      const [loading, setLoading] = useState(true);
+      useEffect(() => {
+        const unsub = auth.onAuthStateChanged((u) => { setUser(u); setLoading(false); });
+        return unsub;
+      }, []);
+      const signIn = async () => {
+        try { await auth.signInWithPopup(googleProvider); }
+        catch (err) { if (err.code === "auth/popup-blocked" || err.code === "auth/popup-closed-by-user") { await auth.signInWithRedirect(googleProvider); } }
+      };
+      if (loading || !user) return <LoginScreen onSignIn={signIn} loading={loading} />;
+      return <Dashboard user={user} />;
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
